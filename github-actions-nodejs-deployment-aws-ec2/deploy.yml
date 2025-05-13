@@ -1,0 +1,130 @@
+name: AWS-EC2-Deployment
+
+on:
+  push:
+    branches:
+      - qa #any branch you want to deploy
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment (qa or preprod)"
+        required: true
+        default: preprod #authentication required to deploy this branch
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment || github.ref_name }}
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ github.event.inputs.environment || github.ref_name }}
+      # This ensures 'preprod' will require manual approval, configured in GitHub UI
+
+    env: #All Variables are added in Environment Variables in qa and preprod environment#e.g. Environment qa: Variable Name=AWS_REGION, Value=ap-south-1#
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      REGION: ${{ vars.REGION }}
+      PARAMETER_PATH: ${{ vars.PARAMETER_PATH }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      ENV_STATIC_FILE: ${{ vars.ENV_STATIC_FILE }}
+      APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+      DEPLOYMENT_GROUP: ${{ vars.DEPLOYMENT_GROUP }}
+      S3_APP_NAME: ${{ vars.S3_APP_NAME }} 
+      CHARACTER_LENGHT: ${{ vars.CHARACTER_LENGHT }} # Why This Here ? "This is Because Env variable in parameter store, Store as /payment-page/qa/URL but we required onlu URL so add a Lenght which can remove first unuseable variable"#
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }} #Define Value in github secrets 
+          aws-region: ${{ env.AWS_REGION }} #Define Value in github secrets 
+
+      - name: Set up SSH   #Required to Fetch some repo, Ignore if not required#
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Install dependencies
+        run: sudo apt-get install jq -y
+
+      - name: Fetch environment files
+        run: |
+          aws s3 cp s3://${{ env.S3_BUCKET }}/templates/${{ env.ENV_STATIC_FILE }} .
+          mv ${{ env.ENV_STATIC_FILE }} .env
+          aws ssm get-parameters-by-path --path ${{ env.PARAMETER_PATH }} --region ${{ env.REGION }} --with-decryption --query "Parameters[*].{Name:Name,Value:Value}"  --output json | jq .[] | jq -r '.Name+"="+.Value' | cut -c ${{ env.CHARACTER_LENGHT }} >>.env
+
+          cat .env
+
+      - name: Create app.json
+        run: |
+          aws s3 cp s3://${{ env.S3_BUCKET }}/templates/app-template.json .
+          sed -e "s/%%process_backend%%/${{ env.APPLICATION_NAME }}/g" < app-template.json > app.json
+          rm -f app-template.json
+
+      - name: Create db_config.json
+        run: |
+          DB_USER=$(aws ssm get-parameters --names ${{ env.PARAMETER_PATH }}/DB_USER --region ${{ env.REGION }} --with-decryption --query "Parameters[*].{Value:Value}" --output text)
+          DB_PASSWORD=$(aws ssm get-parameters --names ${{ env.PARAMETER_PATH }}/DB_PASSWORD --region ${{ env.REGION }} --with-decryption --query "Parameters[*].{Value:Value}" --output text)
+          DB_NAME=$(aws ssm get-parameters --names ${{ env.PARAMETER_PATH }}/DB_NAME --region ${{ env.REGION }} --with-decryption --query "Parameters[*].{Value:Value}" --output text)
+          DB_HOST=$(aws ssm get-parameters --names ${{ env.PARAMETER_PATH }}/DB_HOST --region ${{ env.REGION }} --with-decryption --query "Parameters[*].{Value:Value}" --output text)
+
+          aws s3 cp s3://${{ env.S3_BUCKET }}/templates/db_config-template.json .
+          sed -e "s/%%DB_USER%%/$DB_USER/g; s/%%DB_PASSWORD%%/$DB_PASSWORD/g; s/%%DB_NAME%%/$DB_NAME/g; s/%%DB_HOST%%/$DB_HOST/g" \
+            < db_config-template.json > db_config.json
+          rm -f db_config-template.json
+
+      - name: Generate appspec.yml
+        run: |
+          sed -e "s/%%APPLICATION_NAME%%/${{ env.APPLICATION_NAME }}/g;" < appspec.template > appspec.yml
+          rm -f appspec.template
+
+      - name: Build project
+        run: |
+          npm install -g pm2 typescript
+          rm -rf node_modules package-lock.json
+          npm install
+          npm update rocketfuel-models
+          npm run build
+
+      - name: Zip project
+        run: zip -r deployment-package.zip . --exclude .git\* --exclude .gitignore
+
+      - name: Upload to S3
+        run: aws s3 cp deployment-package.zip s3://${{ env.S3_BUCKET }}/deployment-package.zip
+
+      - name: Register CodeDeploy Revision
+        run: |
+          aws deploy register-application-revision \
+            --application-name ${{ env.APPLICATION_NAME }} \
+            --revision revisionType=S3,s3Location="{bucket=${{ env.S3_BUCKET }},key=deployment-package.zip,bundleType=zip}" \
+            --region ${{ env.REGION }}
+
+      - name: Create Deployment #before that create a application and deployment group in AWS Codedeploy
+        id: create_deploy
+        run: |
+          deployment_id=$(aws deploy create-deployment \
+            --application-name ${{ env.APPLICATION_NAME }} \
+            --deployment-group ${{ env.DEPLOYMENT_GROUP }} \
+            --description "Deployed from GitHub Actions" \
+            --revision revisionType=S3,s3Location="{bucket=${{ env.S3_BUCKET }},bundleType=zip,key=deployment-package.zip}" \
+            --ignore-application-stop-failures \
+            --file-exists-behavior OVERWRITE \
+            --region ${{ env.REGION }} \
+            --output text)
+          echo "deployment_id=$deployment_id" >> $GITHUB_OUTPUT
+
+      - name: Wait for deployment to succeed
+        run: |
+          aws deploy wait deployment-successful \
+            --deployment-id ${{ steps.create_deploy.outputs.deployment_id }} \
+            --region ${{ env.REGION }}
+          echo "Deployment completed successfully!"
