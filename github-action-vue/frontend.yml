@@ -1,0 +1,129 @@
+name: Frontend-CICD
+
+on:
+  push:
+    branches: [qa]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - qa
+          - preprod
+          - prod
+      artifact_sha:
+        description: "Artifact SHA to deploy (leave empty for latest)"
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  APP_NAME: frontend-app
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
+
+# ------------------------
+# CI: BUILD ONCE
+# ------------------------
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test --if-present
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Build
+        run: npm run build
+
+      - name: Generate static files
+        run: npm run generate
+
+      - name: Upload artifact to GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload artifact to S3 (long-term)
+        run: |
+          aws s3 sync dist/ \
+            s3://$ARTIFACT_BUCKET/$APP_NAME/${{ github.sha }}/
+          aws s3 sync dist/ \
+            s3://$ARTIFACT_BUCKET/$APP_NAME/latest/
+
+# ------------------------
+# CD: DEPLOY / ROLLBACK
+# ------------------------
+  deploy:
+    needs: ci
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment }}
+      ARTIFACT_SHA: ${{ github.event.inputs.artifact_sha }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      CLOUDFRONT_DIST_ID: ${{ vars.CLOUDFRONT_DIST_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download artifact from S3
+        run: |
+          if [ -n "$ARTIFACT_SHA" ]; then
+            echo "⬇️ Rolling back artifact $ARTIFACT_SHA"
+            aws s3 sync \
+              s3://$ARTIFACT_BUCKET/$APP_NAME/$ARTIFACT_SHA/ dist/
+          else
+            echo "⬇️ Deploying latest artifact"
+            aws s3 sync \
+              s3://$ARTIFACT_BUCKET/$APP_NAME/latest/ dist/
+          fi
+
+      - name: Deploy
+        run: |
+          chmod +x scripts/deploy.sh
+          ./scripts/deploy.sh $ENVIRONMENT
+

@@ -1,0 +1,27 @@
+name: Angular CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [ qa, sandbox, preprod, prod ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: angular-dist
+          path: dist/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Fetch SSM → inject env → deploy to S3 → invalidate CF
+
