@@ -27,9 +27,7 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
 
-# ------------------------
-# CI: BUILD ONCE
-# ------------------------
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -85,9 +83,7 @@ jobs:
           aws s3 sync dist/ \
             s3://$ARTIFACT_BUCKET/$APP_NAME/latest/
 
-# ------------------------
-# CD: DEPLOY / ROLLBACK
-# ------------------------
+
   deploy:
     needs: ci
     if: github.event_name == 'workflow_dispatch'
