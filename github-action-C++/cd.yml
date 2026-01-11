@@ -1,0 +1,31 @@
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-${{ github.sha }}
+
+      - name: Select env file
+        run: |
+          cp .env.${{ inputs.environment }} .env
+
+      - name: Build Docker image
+        run: |
+          docker build -t app:${{ github.sha }} .
+
+      - name: Run container with env
+        run: |
+          docker run --env-file .env app:${{ github.sha }}
+

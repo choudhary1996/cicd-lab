@@ -1,0 +1,27 @@
+# main.yml
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy-dev:
+    needs: ci
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: dev
+
+  deploy-stage:
+    needs: deploy-dev
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: stage
+
+  deploy-prod:
+    needs: deploy-stage
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: prod
+
