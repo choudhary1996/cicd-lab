@@ -3,14 +3,18 @@ name: AWS-EC2-Deployment
 on:
   push:
     branches:
-      - qa #any branch you want to deploy
+      - qa
 
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment (qa or preprod)"
+        description:
         required: true
-        default: preprod #authentication required to deploy this branch
+        type: choice
+        options:
+          - preprod
+          - sandbox
+          - prod
 
 permissions:
   id-token: write
@@ -23,9 +27,8 @@ jobs:
 
     environment:
       name: ${{ github.event.inputs.environment || github.ref_name }}
-      # This ensures 'preprod' will require manual approval, configured in GitHub UI
 
-    env: #All Variables are added in Environment Variables in qa and preprod environment#e.g. Environment qa: Variable Name=AWS_REGION, Value=ap-south-1#
+    env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       REGION: ${{ vars.REGION }}
       PARAMETER_PATH: ${{ vars.PARAMETER_PATH }}
@@ -34,7 +37,7 @@ jobs:
       APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
       DEPLOYMENT_GROUP: ${{ vars.DEPLOYMENT_GROUP }}
       S3_APP_NAME: ${{ vars.S3_APP_NAME }} 
-      CHARACTER_LENGHT: ${{ vars.CHARACTER_LENGHT }} # Why This Here ? "This is Because Env variable in parameter store, Store as /payment-page/qa/URL but we required onlu URL so add a Lenght which can remove first unuseable variable"#
+      CHARACTER_LENGHT: ${{ vars.CHARACTER_LENGHT }}
 
     steps:
       - name: Checkout code
@@ -43,10 +46,10 @@ jobs:
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }} #Define Value in github secrets 
-          aws-region: ${{ env.AWS_REGION }} #Define Value in github secrets 
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }} 
+          aws-region: ${{ env.AWS_REGION }} 
 
-      - name: Set up SSH   #Required to Fetch some repo, Ignore if not required#
+      - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
