@@ -65,8 +65,6 @@ jobs:
           mv ${{ env.ENV_STATIC_FILE }} .env
           aws ssm get-parameters-by-path --path ${{ env.PARAMETER_PATH }} --region ${{ env.REGION }} --with-decryption --query "Parameters[*].{Name:Name,Value:Value}"  --output json | jq .[] | jq -r '.Name+"="+.Value' | cut -c ${{ env.CHARACTER_LENGHT }} >>.env
 
-          cat .env
-
       - name: Create app.json
         run: |
           aws s3 cp s3://${{ env.S3_BUCKET }}/templates/app-template.json .
